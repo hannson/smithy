@@ -1,19 +1,41 @@
 # Default zero values
 
+* **Author**: Michael Dowling, Principal Engineer, AWS
+* **Created**: 2021-08-24
+* **Last updated**: 2021-08-28
+
+
+## Abstract
+
 This document describes a fundamental change to the way Smithy describes
-structure member nullability. By adding a `@default` trait to structure members,
-code generators can generate non-null accessors (or getters) for members marked
-as `@default` or `@required` (with some caveats for backward compatibility).
-When implemented, this proposal will convert, at minimum, 18,000 currently
-nullable property accessors to non-nullable in the Rust, Kotlin, and Swift
-AWS SDKs.
+structure member nullability (also known as optionality). By adding a
+`@default` trait to structure members, code generators can generate non-null
+accessors (or getters) for members marked as `@default` or `@required`
+(with some caveats for backward compatibility). While this proposal is not
+AWS-specific, the practical impact of it is that when implemented, it will
+convert at minimum 18,000 optional property accessors to non-optional in the
+Rust, Kotlin, and Swift AWS SDKs.
 
 In order to implement these changes, Smithy will need a 2.0 bump of the IDL.
 
 
+## Terms used in this proposal
+
+* null: This document uses the term null, nullable, and nullability to refer
+  to optional members that optionally have a value. Some programming languages
+  don't have a concept of `null` and need to map this to whatever abstraction
+  is appropriate for that programming language (for example, `Option` in Rust
+  or `Maybe` in Haskell).
+* accessor, getter: In this proposal, the terms "accessor" and "getter" should
+  be considered generic terms that translate to however a programming language
+  exposes structure member values. For example, some programming languages like
+  Java use literal getter methods while others might expose struct style
+  properties directly.
+
+
 ## Motivation
 
-Most accessors, or "getters", generated from Smithy models return nullable
+Most structure member accessors generated from Smithy models return nullable
 values. As new languages like Rust and Kotlin that explicitly model nullability
 (or optionality) in their type systems adopt Smithy, excessive nullability in
 generated code becomes burdensome to end-users because they need to call methods
@@ -83,22 +105,49 @@ Nullability in Smithy IDL 1.0 is controlled in the following ways:
 
 ### Why the `@required` trait was unreliable for codegen
 
-Code generated from Smithy has historically never used the `@required` trait
-to influence code generation, and it was treated mostly as validation. Service
-teams consider removing the required trait from a member a backward compatible
-change because it is loosening a restriction. This gives service teams the
-flexibility to add or remove the required trait as needed without breaking
+Removing the `@required` trait from a structure member has always been
+considered backwards compatible in Smithy because it is loosening a restriction.
+The `@required` trait was categorized as a constraint trait and was only used
+for validation rather than to influence generated types. This gives service
+teams the flexibility to remove the required trait as needed without breaking
 generated client code. The `@required` trait might be removed if new use cases
 emerge where a member is only conditionally required, and more rarely, it might
 be added if the service team accidentally omitted the trait when the service
 initially launched.
 
-As of May 2021, the `@required` trait has been removed from a structure member
-in 105 different AWS services across 618 different members. Encoding the
-`@required` trait into generated types would have made changing a member from
-required to optional a breaking change to generated code, which is something
-we try to avoid given its frequency and the cost of shipping a major version
-of a service and client.
+For context, as of May 2021, the `@required` trait has been removed from a
+structure member in 105 different AWS services across 618 different members.
+Encoding the `@required` trait into generated types would have made changing a
+member from required to optional a breaking change to generated code, which is
+something most services try to avoid given its frequency and the cost of
+shipping a major version of a service and client. While this data is
+AWS-specific, it's indicative of how often disparate teams that use Smithy
+(or its predecessor) sought to update their APIs so that members can become
+optional.
+
+
+## Goals and non-goals
+
+**Goals**
+
+1. Reduce the amount of nullability in code generated from Smithy models.
+2. Maintain similar backward compatibility guarantees that exist today like
+   being able to backward compatibly remove the `@required` trait from a
+   structure member without breaking previously generated clients.
+3. Maintain Smithy's protocol-agnostic design. Protocols should never influence
+   how types are generated from Smithy models; they're only intended to change
+   how types are serialized and deserialized. In practice, this means that
+   features of a protocol that extend beyond Smithy's metamodel and definitions
+   of structure member nullability should not be exposed in code generated
+   types that represent Smithy shapes.
+4. We should be able to use the same code-generated types for clients, servers,
+   and standalone type codegen.
+
+**Non-goals**
+
+1. Mandate how protocols are designed. This proposal intends to define
+   requirements and affordances about how nullability is defined the Smithy
+   metamodel, and in turn, in code generated from Smithy models.
 
 
 ## High-level summary
@@ -139,9 +188,10 @@ structure Message {
 ```
 
 With the above change, codegen remains the same: both values are non-null.
-However, if `title` is now omitted, validation for the type will _not_ fail
-because `title` has a default, zero value of `""`. The trade-off to this change
-is that it is impossible to tell if `title` was omitted or explicitly provided.
+However, if `title` is not set in client code, server-side validation for the
+type will _not_ fail because `title` has a default, zero value of `""`. The
+trade-off to this change is that it is impossible to tell if `title` was
+omitted or explicitly provided.
 
 
 ## Proposal overview
@@ -160,8 +210,7 @@ nullability semantics of IDL 1.0 going forward as 2.0 becomes the default.
 
 ### In Smithy IDL 1.0
 
-1. Add the `@default` trait to structure members. See _`@default` trait_ for
-   details.
+1. Add the `@default` trait to structure members.
 2. Warn when a structure member has non-nullable semantics but is not marked as
    `@default`.
 3. Warn when `@box` is used on structure members.
@@ -195,8 +244,8 @@ nullability semantics of IDL 1.0 going forward as 2.0 becomes the default.
 ## `@default` trait
 
 The `@default` trait can be applied to structure members to indicate that the
-targeted shape has a default, zero value and cannot be set explicitly to null.
-The `@default` trait *does not* allow for a custom default value.
+targeted shape has a default, zero value. The `@default` trait *does not* allow
+for a custom default value.
 
 The following example defines a structure with a `@default` "title" member that
 has a default zero value:
@@ -233,8 +282,8 @@ structure Message {
 
 The following list describes the default zero value of each kind of shape.
 Programming languages and code generators that cannot initialize structure
-members with the above default values MUST continue to represent those members
-as nullable.
+members with the above default values SHOULD continue to represent those
+members as nullable (optional).
 
 - Boolean: boolean false (`false`)
 - Numbers: numeric zero (`0`)
@@ -262,9 +311,11 @@ as nullable.
 ### Impact on API design
 
 Members marked with the `@default` trait cannot differentiate between whether a
-property was set to its zero value or if a property was omitted. This makes the
-`@default` trait a poor choice for Update/Patch-style APIs where it is critical
-to differentiate between omitted values and explicitly set values.
+property was set to its zero value or if a property was omitted. Default zero
+values are part of the type system of Smithy and not specific to any particular
+serialization of a shape. This makes the `@default` trait a poor choice for
+Update/Patch-style APIs where it is critical to differentiate between omitted
+values and explicitly set values.
 
 To help guide API design, built-in validation will be added to Smithy to detect
 and warn when `@default` members are detected in the top-level input of
@@ -394,11 +445,11 @@ be enforced in tools like smithy-diff.
 
 ### `@default` trait syntactic sugar
 
-In Smithy IDL 2.0, we will add syntactic sugar for attaching the `@default`
-trait to a member to make the importance of the `@default` trait more apparent,
-and to make it easier to find all structure members that are initialized to a
-default value. A member type followed by `= default` will be syntactic sugar
-for applying the `@default` trait to the member.
+Smithy IDL 2.0 introduces syntactic sugar for attaching the `@default` trait to
+a member to make the importance of the `@default` trait more apparent, and to
+make it easier to find all structure members that are initialized to a default
+value. A member type followed by `= default` will be syntactic sugar for
+applying the `@default` trait to the member.
 
 The following structure:
 
@@ -478,33 +529,48 @@ values.
   members as non-null.
 
 
-### Serialization
+### Protocol serialization and deserialization guidance
 
-Members marked with the `@default` trait that are set to their default zero
-values SHOULD NOT be serialized.
+Protocols MAY choose if and how the `@default` trait impacts serialization and
+deserialization. However, this proposal offers the following general
+best-practices for protocol designers:
 
-- Deserializers MUST tolerate receiving a serialized default value. Failing here
-  would leave end-users with no recourse other than to wait for a client or
-  server to update and fix their implementation. This also accounts for older
-  clients that think a structure member is required, but the service has since
-  transitioned the member to use the `@default` trait.
-- Serializing zero values can cause unintended information disclosure like
-  revealing internal-only members (this is the same reason that null values
-  SHOULD NOT be serialized).
+1. Serializing the default zero value of a member marked with the `@default`
+   trait can lead to unintended information disclosure. For example, consider
+   a newly introduced structure member marked with the `@default` trait that is
+   only exposed to customers of a service that are allowlisted into a private
+   beta. Serializing the zero value these members could expose the feature to
+   customers that are not part of the private beta because they would see the
+   member serialized in messages they receive from the service.
+2. Protocol deserialization implementations SHOULD tolerate receiving a
+   serialized default zero value. This also accounts for older clients that
+   think a structure member is required, but the service has since transitioned
+   the member to use the `@default` trait.
+3. Client implementations SHOULD tolerate structure members marked as
+   `@required` that have no serialized value. For example, if a service
+   migrates a member from `@required` to `@default`, then older clients SHOULD
+   gracefully handle the zero value of the member being omitted on the wire.
+   In this case, rather than failing, a client SHOULD set the member value to
+   its default zero value. Failing to deserialize the structure is a bad
+   outcome because what the service perceived as a backward compatible change
+   (i.e., replacing the `@required` trait with the `@default` trait) could
+   break previously generated clients.
 
 
-### Deserialization
+#### AWS Protocols
 
-Structure members marked as `@required` are not in and of themselves a guarantee
-that they will be serialized. For example, if a service migrates a member from
-`@required` to `@default`, then older clients MUST gracefully handle the zero
-value of the member being omitted on the wire. In this case, rather than
-failing, a client MUST set the member value to its default zero value. Failing
-to deserialize the structure is a bad outcome because what the service
-perceived as a backward compatible change (i.e., removing the `@required`
-trait) could break previously generated clients. The only recourse for the
-client is to tolerate the missing member and fill in the deterministic default
-value.
+`aws.protocols#restJson1`, `aws.protocols#awsJson1_0`,
+`aws.protocols#awsJson1_1`, `aws.protocols#restJson1`, `aws.protocols#restXml`,
+`aws.protocols#awsQuery`, and `aws.protocols#ec2Query` MUST adhere to the
+following requirements, all future AWS protocols SHOULD adhere to the
+following guidance:
+
+1. Clients SHOULD omit the default zero value of structure members marked with
+   the `@default` trait.
+2. Service implementations MUST tolerate receiving the default zero value of a
+   structure member marked with the `@default` trait.
+3. Client deserializers MUST fill in a default zero value for structure members
+   marked with the `@required` trait that have no serialized value.
 
 
 ## Alternatives and trade-offs
@@ -569,6 +635,19 @@ more problematic as teams are beginning to use Smithy to model data types
 outside of client/server interactions.
 
 
+### Remove the `@required` trait
+
+Another alternative for Smithy is to remove the `@required` trait and make
+every structure member nullable. This is essentially how many Smithy code
+generators function today, and removing the `@required` trait would codify this
+in the specification. However, the `@required` trait still provides value to
+services because they have perfect knowledge of what is and is not required,
+and therefore can automatically enforce that required properties are sent from
+a client. It also provides value in documentation because it defines at that
+point in time which members a caller must provide and which members they can
+expect in a response.
+
+
 ## FAQ
 
 
@@ -578,6 +657,15 @@ Service teams not understanding the traits, and then accidentally making
 breaking changes to Smithy generated SDKs. Or they potentially need to make a
 breaking change in SDKs because they didn't understand the traits. We can
 mitigate this somewhat through validation and backward compatibility checks.
+
+
+### Is the `@default` trait only used to remove the `@required` trait?
+
+No. It can be used any time the zero value of a structure member is a
+reasonable default or can be treated the same as an omitted value. For example,
+if `0` and `null` could communicate the same thing to a service, then using the
+`@default` trait makes it easier to use the value because a null check isn't
+needed before doing something with the value.
 
 
 ### Why not allow for custom default values?
@@ -755,13 +843,7 @@ As of March 17, 2021, 4,805 members.
 
 ### Can we disallow the box trait on members in 1.0 right now?
 
-Not backward compatibly for AWS. It's used on 271 members in AWS services. This
-includes the following services: acmpca, appconfig, appmesh (Smithy-based),
-codestar, codestarnotifications, cognitoidentity, cognitoidentityprovider,
-connect, connectparticipant, costexplorer, glue, imagebuilder, iot,
-iotanalytics, iotsecuretunneling, pricing, quicksight, route53resolver,
-s3control, sagemaker, sagemakera2iruntime, secretsmanager,
-servicecatalogappregistry, sfn, ssm, timestreamwrite.
+Not backward compatibly. For example, in AWS, it's used on 271 members.
 
 
 ### How often has the `@required` trait been removed from members in AWS?
@@ -776,3 +858,31 @@ shapes.
 
 The required trait has been added to a member 9 different times across 5
 different services.
+
+
+### Why not base backward compatibility rules around inputs and outputs?
+
+This proposal talks about backward compatibility of structure members and does
+not take whether the structure is used as part of input or output into account.
+For example, making an input member transition from required to optional might
+not break a client because it's less restrictive, and neither would making an
+output member transition from optional to required because with clients, output
+types are typically created only during deserialization (excluding things like
+mocking and injecting responses in middleware).
+
+This proposal does not suggest different backward compatibility guarantees for
+inputs vs outputs because:
+
+1. Smithy can be used outside of client/server interactions where inputs and
+   outputs are irrelevant.
+2. Shapes defined in Smithy models are defined independent of services. They
+   are only associated with services when a service points to them either
+   directly or transitively. There has to be generic backward compatibility
+   rules for structures independent of services.
+
+One approach to support different nullability rules for inputs vs outputs is
+to generate distinct types for shapes used in input vs output. This could allow
+shapes used as part of the closure of input to have different backward
+compatibility guarantees from shapes used as part of output, but comes with
+steep tradeoffs that includes a code size increase (2 generated types per
+shape) and awkwardness around roundtripping output shapes as input.
